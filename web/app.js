@@ -1,14 +1,22 @@
 'use strict';
 
 // ═══════════════════════════════════════════════════════
+//  Constants
+// ═══════════════════════════════════════════════════════
+// Conservative browser canvas limits (especially mobile Safari)
+const MAX_CANVAS_DIM    = 4096;   // max single dimension px
+const MAX_CANVAS_PIXELS = 16e6;   // ~16 megapixel total
+const SMART_TOL         = 10;     // colour tolerance for smart split
+
+// ═══════════════════════════════════════════════════════
 //  State
 // ═══════════════════════════════════════════════════════
 const state = {
-  mode:      'stitch',    // stitch | split | smartsplit | stitchsplit | watermark
-  direction: 'vertical',  // vertical | horizontal
-  files:     [],          // File[]  (main images)
-  wmFile:    null,        // File    (watermark image)
-  results:   []           // HTMLCanvasElement[]
+  mode:      'stitch',
+  direction: 'vertical',
+  files:     [],
+  wmFile:    null,
+  results:   []
 };
 
 // ═══════════════════════════════════════════════════════
@@ -17,101 +25,85 @@ const state = {
 const $ = id => document.getElementById(id);
 
 const dom = {
-  tabs:         document.querySelectorAll('.tab'),
-  dropZone:     $('drop-zone'),
-  dropLabel:    $('drop-label'),
-  fileInput:    $('file-input'),
-  fileList:     $('file-list'),
-  wmImportRow:  $('wm-import-row'),
-  wmImgBtn:     $('wm-img-btn'),
-  wmImgInput:   $('wm-img-input'),
-  wmImgLabel:   $('wm-img-label'),
+  tabs:          document.querySelectorAll('.tab'),
+  dropZone:      $('drop-zone'),
+  dropLabel:     $('drop-label'),
+  fileInput:     $('file-input'),
+  fileList:      $('file-list'),
+  wmImportRow:   $('wm-import-row'),
+  wmImgBtn:      $('wm-img-btn'),
+  wmImgInput:    $('wm-img-input'),
+  wmImgLabel:    $('wm-img-label'),
 
-  rowDirection: $('row-direction'),
-  btnVertical:  $('btn-vertical'),
-  btnHorizontal:$('btn-horizontal'),
-  rowSsCombo:   $('row-ss-combo'),
-  ssCombo:      $('ss-combo'),
-  rowParts:     $('row-parts'),
-  partsInput:   $('parts-input'),
-  wmOpts:       $('wm-opts'),
-  opacityRange: $('opacity-range'),
-  opacityVal:   $('opacity-val'),
-  greyscaleChk: $('greyscale-chk'),
-  wmCount:      $('wm-count'),
-  wmWidthPct:   $('wm-width-pct'),
-  filename:     $('filename'),
-  fmtSelect:    $('fmt-select'),
+  rowDirection:  $('row-direction'),
+  btnVertical:   $('btn-vertical'),
+  btnHorizontal: $('btn-horizontal'),
+  rowSsCombo:    $('row-ss-combo'),
+  ssCombo:       $('ss-combo'),
+  rowParts:      $('row-parts'),
+  partsInput:    $('parts-input'),
+  wmOpts:        $('wm-opts'),
+  opacityRange:  $('opacity-range'),
+  opacityVal:    $('opacity-val'),
+  greyscaleChk:  $('greyscale-chk'),
+  wmCount:       $('wm-count'),
+  wmWidthPct:    $('wm-width-pct'),
+  filename:      $('filename'),
+  fmtSelect:     $('fmt-select'),
 
-  runBtn:       $('run-btn'),
-  progressWrap: $('progress-wrap'),
-  progressFill: $('progress-fill'),
-  progressLabel:$('progress-label'),
+  runBtn:        $('run-btn'),
+  progressWrap:  $('progress-wrap'),
+  progressFill:  $('progress-fill'),
+  progressLabel: $('progress-label'),
 
-  resultSection:$('result-section'),
-  resultInfo:   $('result-info'),
-  downloadBtn:  $('download-btn'),
-  resultGrid:   $('result-grid'),
+  resultSection: $('result-section'),
+  resultInfo:    $('result-info'),
+  downloadBtn:   $('download-btn'),
+  resultGrid:    $('result-grid'),
 };
 
 // ═══════════════════════════════════════════════════════
-//  UI — mode switching
+//  UI helpers
 // ═══════════════════════════════════════════════════════
-function show(el)  { el.classList.remove('hidden'); }
-function hide(el)  { el.classList.add('hidden'); }
-function toggle(el, v) { el.classList.toggle('hidden', !v); }
+const show   = el => el.classList.remove('hidden');
+const hide   = el => el.classList.add('hidden');
+const toggle = (el, v) => el.classList.toggle('hidden', !v);
 
 function applyMode(mode) {
-  state.mode = mode;
+  state.mode  = mode;
   state.files = [];
   state.wmFile = null;
   renderFileList();
   hideResult();
 
-  const m = mode;
+  dom.tabs.forEach(t => t.classList.toggle('active', t.dataset.mode === mode));
 
-  // Tabs
-  dom.tabs.forEach(t => t.classList.toggle('active', t.dataset.mode === m));
+  toggle(dom.rowDirection, mode === 'stitch' || mode === 'split');
+  toggle(dom.rowSsCombo,   mode === 'stitchsplit');
+  toggle(dom.rowParts,     mode === 'split' || mode === 'smartsplit' || mode === 'stitchsplit');
+  toggle(dom.wmOpts,       mode === 'watermark');
+  toggle(dom.wmImportRow,  mode === 'watermark');
 
-  // Direction row: shown for stitch / split
-  toggle(dom.rowDirection,  m === 'stitch' || m === 'split');
-
-  // Stitch+Split combo
-  toggle(dom.rowSsCombo, m === 'stitchsplit');
-
-  // Parts: shown for split / smartsplit / stitchsplit
-  toggle(dom.rowParts, m === 'split' || m === 'smartsplit' || m === 'stitchsplit');
-
-  // Watermark options
-  toggle(dom.wmOpts,       m === 'watermark');
-  toggle(dom.wmImportRow,  m === 'watermark');
-
-  // File input: multiple for stitch / stitchsplit
-  const multi = m === 'stitch' || m === 'stitchsplit';
+  const multi = mode === 'stitch' || mode === 'stitchsplit';
   dom.fileInput.multiple = multi;
-  dom.dropLabel.textContent = multi ? 'Tap to import images (select multiple)' : 'Tap to import image';
+  dom.dropLabel.textContent = multi
+    ? 'Tap to import images (select multiple)'
+    : 'Tap to import image';
 
-  // Parts label hint
-  if (m === 'smartsplit') {
-    dom.partsInput.placeholder = 'approx.';
-  } else {
-    dom.partsInput.placeholder = '';
-  }
+  dom.partsInput.placeholder = mode === 'smartsplit' ? 'approx.' : '';
 }
 
-// ═══════════════════════════════════════════════════════
-//  UI — file list
-// ═══════════════════════════════════════════════════════
-function formatBytes(bytes) {
-  if (bytes < 1024) return bytes + ' B';
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(0) + ' KB';
-  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+// ─── File list ───────────────────────────────────────
+function formatBytes(b) {
+  if (b < 1024)        return b + ' B';
+  if (b < 1024 * 1024) return (b / 1024).toFixed(0) + ' KB';
+  return (b / (1024 * 1024)).toFixed(1) + ' MB';
 }
 
 function renderFileList() {
   dom.fileList.innerHTML = '';
   state.files.forEach((file, i) => {
-    const li = document.createElement('li');
+    const li   = document.createElement('li');
     li.className = 'file-item';
 
     const thumb = document.createElement('img');
@@ -133,21 +125,16 @@ function renderFileList() {
     rm.className = 'file-remove';
     rm.title = 'Remove';
     rm.textContent = '×';
-    rm.addEventListener('click', () => {
-      state.files.splice(i, 1);
-      renderFileList();
-    });
+    rm.addEventListener('click', () => { state.files.splice(i, 1); renderFileList(); });
 
     li.append(thumb, name, size, rm);
     dom.fileList.appendChild(li);
   });
 }
 
-// ═══════════════════════════════════════════════════════
-//  UI — result
-// ═══════════════════════════════════════════════════════
+// ─── Result grid ─────────────────────────────────────
 function showResult(canvases) {
-  state.results = canvases;
+  state.results    = canvases;
   dom.resultGrid.innerHTML = '';
   const fmt = dom.fmtSelect.value;
   const ext = fmt === 'jpeg' ? 'jpg' : fmt;
@@ -159,8 +146,9 @@ function showResult(canvases) {
 
     const img = document.createElement('img');
     img.className = 'result-thumb';
-    img.src = canvas.toDataURL(`image/${fmt}`, 0.92);
     img.alt = `Result ${i + 1}`;
+    // Use small preview quality for thumbnails
+    img.src = canvas.toDataURL(`image/${fmt}`, 0.5);
 
     const label = document.createElement('div');
     label.className = 'result-thumb-label';
@@ -168,7 +156,8 @@ function showResult(canvases) {
 
     wrap.append(img, label);
     wrap.addEventListener('click', () => {
-      const name = (dom.filename.value.trim() || 'output') + (canvases.length > 1 ? `_${i + 1}` : '');
+      const base = dom.filename.value.trim() || 'output';
+      const name = canvases.length > 1 ? `${base}_${i + 1}` : base;
       downloadSingle(canvas, name, fmt);
     });
     dom.resultGrid.appendChild(wrap);
@@ -186,31 +175,22 @@ function hideResult() {
   state.results = [];
 }
 
-// ═══════════════════════════════════════════════════════
-//  UI — progress
-// ═══════════════════════════════════════════════════════
+// ─── Progress ─────────────────────────────────────────
 function setProgress(pct, label) {
   dom.progressFill.style.width = pct + '%';
   dom.progressLabel.textContent = label || 'Processing…';
 }
-
-function showProgress(label) {
-  setProgress(0, label);
-  show(dom.progressWrap);
-}
-
-function hideProgress() {
-  hide(dom.progressWrap);
-}
+function showProgress(label) { setProgress(0, label); show(dom.progressWrap); }
+function hideProgress()       { hide(dom.progressWrap); }
 
 // ═══════════════════════════════════════════════════════
-//  Image utilities
+//  Core utilities
 // ═══════════════════════════════════════════════════════
 function loadImage(file) {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file);
     const img = new Image();
-    img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+    img.onload  = () => { URL.revokeObjectURL(url); resolve(img); };
     img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Failed to load: ' + file.name)); };
     img.src = url;
   });
@@ -220,64 +200,119 @@ function canvasToBlob(canvas, format, quality = 0.92) {
   return new Promise(resolve => canvas.toBlob(resolve, `image/${format}`, quality));
 }
 
-function yield_() {
-  return new Promise(r => setTimeout(r, 0));
+const yield_ = () => new Promise(r => setTimeout(r, 0));
+
+function imgW(img) { return img.naturalWidth  || img.width;  }
+function imgH(img) { return img.naturalHeight || img.height; }
+
+// Verify a canvas isn't blank due to size limits
+function canvasFailed(canvas) {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return true;
+  try {
+    // Check a pixel in the middle — if everything is 0 and canvas is large it's a failed alloc
+    const d = ctx.getImageData(Math.floor(canvas.width / 2), Math.floor(canvas.height / 2), 1, 1).data;
+    return false; // getImageData succeeded, canvas is valid
+  } catch { return true; }
+}
+
+// Create canvas (returns null if dimensions are too large)
+function safeCanvas(w, h) {
+  if (w <= 0 || h <= 0) return null;
+  const c = document.createElement('canvas');
+  c.width  = w;
+  c.height = h;
+  // If canvas silently failed (iOS/Android limit), getContext may return null
+  if (!c.getContext('2d')) return null;
+  return c;
 }
 
 // ═══════════════════════════════════════════════════════
-//  Image processing — Stitch
+//  Scale-to-fit helper
+//  Reduces image dimensions so the combined canvas fits limits.
 // ═══════════════════════════════════════════════════════
-function stitchImages(imgs, direction) {
-  const canvas = document.createElement('canvas');
+function computeScale(imgs, direction) {
+  let totalW, totalH;
+  if (direction === 'vertical') {
+    totalW = Math.max(...imgs.map(imgW));
+    totalH = imgs.reduce((s, i) => s + imgH(i), 0);
+  } else {
+    totalW = imgs.reduce((s, i) => s + imgW(i), 0);
+    totalH = Math.max(...imgs.map(imgH));
+  }
+
+  let scale = 1;
+  if (totalW > MAX_CANVAS_DIM) scale = Math.min(scale, MAX_CANVAS_DIM / totalW);
+  if (totalH > MAX_CANVAS_DIM) scale = Math.min(scale, MAX_CANVAS_DIM / totalH);
+  if (totalW * totalH * scale * scale > MAX_CANVAS_PIXELS)
+    scale = Math.min(scale, Math.sqrt(MAX_CANVAS_PIXELS / (totalW * totalH)));
+
+  return { scale, totalW, totalH };
+}
+
+// ═══════════════════════════════════════════════════════
+//  STITCH — creates one canvas (scales if needed)
+// ═══════════════════════════════════════════════════════
+function stitchImages(imgs, direction, scale = 1) {
+  const sw = direction === 'vertical'
+    ? Math.max(...imgs.map(imgW))
+    : imgs.reduce((s, i) => s + imgW(i), 0);
+  const sh = direction === 'vertical'
+    ? imgs.reduce((s, i) => s + imgH(i), 0)
+    : Math.max(...imgs.map(imgH));
+
+  const cw = Math.round(sw * scale);
+  const ch = Math.round(sh * scale);
+
+  const canvas = safeCanvas(cw, ch);
+  if (!canvas) throw new Error(`Canvas too large (${cw}×${ch}). Try fewer/smaller images.`);
+
   const ctx = canvas.getContext('2d');
 
   if (direction === 'vertical') {
-    canvas.width  = Math.max(...imgs.map(img => img.naturalWidth  || img.width));
-    canvas.height = imgs.reduce((s, img) => s + (img.naturalHeight || img.height), 0);
     let y = 0;
     for (const img of imgs) {
-      ctx.drawImage(img, 0, y);
-      y += img.naturalHeight || img.height;
+      const dh = Math.round(imgH(img) * scale);
+      const dw = Math.round(imgW(img) * scale);
+      ctx.drawImage(img, 0, y, dw, dh);
+      y += dh;
     }
   } else {
-    canvas.width  = imgs.reduce((s, img) => s + (img.naturalWidth || img.width), 0);
-    canvas.height = Math.max(...imgs.map(img => img.naturalHeight || img.height));
     let x = 0;
     for (const img of imgs) {
-      ctx.drawImage(img, x, 0);
-      x += img.naturalWidth || img.width;
+      const dw = Math.round(imgW(img) * scale);
+      const dh = Math.round(imgH(img) * scale);
+      ctx.drawImage(img, x, 0, dw, dh);
+      x += dw;
     }
   }
   return canvas;
 }
 
 // ═══════════════════════════════════════════════════════
-//  Image processing — Split (equal parts)
+//  SPLIT — equal parts from an existing canvas
 // ═══════════════════════════════════════════════════════
 function splitCanvas(canvas, numParts, direction) {
   const results = [];
-
   if (direction === 'horizontal') {
-    // Horizontal strips (top → bottom)
     const partH = Math.floor(canvas.height / numParts);
     const rem   = canvas.height % numParts;
     for (let i = 0; i < numParts; i++) {
       const y = i * partH;
       const h = partH + (i === numParts - 1 ? rem : 0);
-      const c = document.createElement('canvas');
-      c.width = canvas.width; c.height = h;
+      const c = safeCanvas(canvas.width, h);
+      if (!c) throw new Error('Split part too large for canvas.');
       c.getContext('2d').drawImage(canvas, 0, y, canvas.width, h, 0, 0, canvas.width, h);
       results.push(c);
     }
   } else {
-    // Vertical strips (left → right)
     const partW = Math.floor(canvas.width / numParts);
     const rem   = canvas.width % numParts;
     for (let i = 0; i < numParts; i++) {
       const x = i * partW;
       const w = partW + (i === numParts - 1 ? rem : 0);
-      const c = document.createElement('canvas');
-      c.width = w; c.height = canvas.height;
+      const c = safeCanvas(w, canvas.height);
+      if (!c) throw new Error('Split part too large for canvas.');
       c.getContext('2d').drawImage(canvas, x, 0, w, canvas.height, 0, 0, w, canvas.height);
       results.push(c);
     }
@@ -286,107 +321,193 @@ function splitCanvas(canvas, numParts, direction) {
 }
 
 // ═══════════════════════════════════════════════════════
-//  Image processing — Smart Split
-//  Port of Java smartSplitHelper (same algorithm, ±10 tolerance)
+//  VIRTUAL SMART SPLIT
+//  Processes images one-by-one — never creates a giant canvas.
+//  Works for any number of images / any total height.
+// ═══════════════════════════════════════════════════════
+
+// Scan a single image for uniform rows starting at or after `nextSplitY`
+// (in global coordinates). Returns updated split list and nextSplitY.
+function scanImageRows(imgData, iw, ih, globalOffset, nextSplitY, startH, splits) {
+  for (let row = 0; row < ih; row++) {
+    const absY = globalOffset + row;
+    if (absY < nextSplitY) continue;
+
+    // Check if every adjacent pixel pair in this row has similar colour
+    let uniform = true;
+    for (let j = 0; j < iw - 1; j++) {
+      const p1 = (row * iw + j)     * 4;
+      const p2 = (row * iw + j + 1) * 4;
+      if (Math.abs(imgData[p1]   - imgData[p2])   > SMART_TOL ||
+          Math.abs(imgData[p1+1] - imgData[p2+1]) > SMART_TOL ||
+          Math.abs(imgData[p1+2] - imgData[p2+2]) > SMART_TOL ||
+          Math.abs(imgData[p1+3] - imgData[p2+3]) > SMART_TOL) {
+        uniform = false;
+        break;
+      }
+    }
+
+    if (uniform) {
+      splits.push(absY);
+      nextSplitY = absY + startH;
+    }
+  }
+  return nextSplitY;
+}
+
+// Render one vertical section [startY, endY] by compositing source images
+function renderSectionVertical(imgs, startY, endY) {
+  const maxW = Math.max(...imgs.map(imgW));
+  const h    = endY - startY;
+  const c    = safeCanvas(maxW, h);
+  if (!c) throw new Error(`Section too large (${maxW}×${h}).`);
+
+  const ctx = c.getContext('2d');
+  let imgStartY = 0;
+
+  for (const img of imgs) {
+    const iH = imgH(img);
+    const iW = imgW(img);
+    const imgEndY = imgStartY + iH;
+
+    if (imgEndY > startY && imgStartY < endY) {
+      const clipTop = Math.max(imgStartY, startY);
+      const clipBot = Math.min(imgEndY, endY);
+      const srcY    = clipTop - imgStartY;
+      const dstY    = clipTop - startY;
+      const segH    = clipBot - clipTop;
+      ctx.drawImage(img, 0, srcY, iW, segH, 0, dstY, iW, segH);
+    }
+
+    imgStartY = imgEndY;
+    if (imgStartY >= endY) break;
+  }
+  return c;
+}
+
+// Main virtual smart-split function — works on array of Images
+async function smartSplitVirtual(imgs, numParts, progressCb) {
+  const totalH = imgs.reduce((s, i) => s + imgH(i), 0);
+  const startH = Math.floor(totalH / numParts);
+
+  const splits  = [0];
+  let nextSplitY = startH;
+  let globalOffset = 0;
+
+  for (let idx = 0; idx < imgs.length; idx++) {
+    const img = imgs[idx];
+    const iw  = imgW(img);
+    const ih  = imgH(img);
+
+    // Render this single image to a small canvas for pixel scanning
+    const tmp = safeCanvas(iw, ih);
+    if (!tmp) { globalOffset += ih; continue; } // skip if this single image is somehow too large
+    tmp.getContext('2d').drawImage(img, 0, 0);
+    const data = tmp.getContext('2d').getImageData(0, 0, iw, ih).data;
+
+    nextSplitY = scanImageRows(data, iw, ih, globalOffset, nextSplitY, startH, splits);
+
+    globalOffset += ih;
+    if (progressCb) progressCb(Math.round((globalOffset / totalH) * 80));
+    await yield_();
+  }
+
+  if (splits[splits.length - 1] !== totalH) splits.push(totalH);
+  return splits; // array of global Y split points
+}
+
+// ═══════════════════════════════════════════════════════
+//  SMART SPLIT — single canvas version (for small images)
 // ═══════════════════════════════════════════════════════
 async function smartSplitCanvas(canvas, numParts, progressCb) {
-  const ctx    = canvas.getContext('2d');
-  const W      = canvas.width;
-  const H      = canvas.height;
-  const data   = ctx.getImageData(0, 0, W, H).data;
-  const TOL    = 10;
+  const W  = canvas.width;
+  const H  = canvas.height;
+  const data = canvas.getContext('2d').getImageData(0, 0, W, H).data;
 
   const startH = Math.floor(H / numParts);
-  const splits = [0]; // y positions of split points
+  const splits = [0];
+  let nextSplitY = startH;
 
   for (let i = startH; i < H; i++) {
     let uniform = true;
     for (let j = 0; j < W - 1; j++) {
       const p1 = (i * W + j)     * 4;
       const p2 = (i * W + j + 1) * 4;
-      if (Math.abs(data[p1]   - data[p2])   > TOL ||
-          Math.abs(data[p1+1] - data[p2+1]) > TOL ||
-          Math.abs(data[p1+2] - data[p2+2]) > TOL ||
-          Math.abs(data[p1+3] - data[p2+3]) > TOL) {
+      if (Math.abs(data[p1]   - data[p2])   > SMART_TOL ||
+          Math.abs(data[p1+1] - data[p2+1]) > SMART_TOL ||
+          Math.abs(data[p1+2] - data[p2+2]) > SMART_TOL ||
+          Math.abs(data[p1+3] - data[p2+3]) > SMART_TOL) {
         uniform = false;
         break;
       }
     }
     if (uniform) {
       splits.push(i);
-      i += startH; // jump to approximate next split zone
+      i += startH;
     }
-
-    // Yield to UI every 200 rows
-    if (i % 200 === 0) {
+    if (i % 300 === 0) {
       if (progressCb) progressCb(Math.round((i / H) * 80));
       await yield_();
     }
   }
 
   if (splits[splits.length - 1] !== H) splits.push(H);
+  return splits;
+}
 
-  if (splits.length < 2) return null; // couldn't split
-
+// Convert split-point array → array of canvases (single-canvas source)
+function splitPointsToCanvases(canvas, splits) {
   const results = [];
   for (let i = 0; i < splits.length - 1; i++) {
     const y = splits[i];
     const h = splits[i + 1] - y;
     if (h <= 0) continue;
-    const c = document.createElement('canvas');
-    c.width = W; c.height = h;
-    c.getContext('2d').drawImage(canvas, 0, y, W, h, 0, 0, W, h);
-    results.push(c);
+    const c = safeCanvas(canvas.width, h);
+    if (c) {
+      c.getContext('2d').drawImage(canvas, 0, y, canvas.width, h, 0, 0, canvas.width, h);
+      results.push(c);
+    }
   }
-  return results.length > 1 ? results : null;
+  return results;
 }
 
 // ═══════════════════════════════════════════════════════
-//  Image processing — Watermark
+//  WATERMARK
 // ═══════════════════════════════════════════════════════
 function applyWatermark(canvas, wmImg, opacityPct, greyscale, count, widthPct) {
   const ctx = canvas.getContext('2d');
   const W   = canvas.width;
   const H   = canvas.height;
 
-  // Scale watermark to widthPct of image width
-  const wmW    = Math.max(1, Math.floor(W * widthPct / 100));
-  const ratio  = wmImg.naturalWidth / wmImg.naturalHeight;
-  const wmH    = Math.max(1, Math.floor(wmW / ratio));
+  const wmW = Math.max(1, Math.floor(W * widthPct / 100));
+  const wmH = Math.max(1, Math.floor(wmW / (imgW(wmImg) / imgH(wmImg))));
 
-  // Build (optionally greyscale) watermark canvas
-  const wmCanvas = document.createElement('canvas');
-  wmCanvas.width  = wmW;
-  wmCanvas.height = wmH;
-  const wctx = wmCanvas.getContext('2d');
+  const wm  = safeCanvas(wmW, wmH);
+  if (!wm) return canvas;
+  const wctx = wm.getContext('2d');
   wctx.drawImage(wmImg, 0, 0, wmW, wmH);
 
   if (greyscale) {
     const id = wctx.getImageData(0, 0, wmW, wmH);
-    const d  = id.data;
-    for (let i = 0; i < d.length; i += 4) {
-      const g = 0.299 * d[i] + 0.587 * d[i+1] + 0.114 * d[i+2];
-      d[i] = d[i+1] = d[i+2] = g;
+    for (let i = 0; i < id.data.length; i += 4) {
+      const g = 0.299 * id.data[i] + 0.587 * id.data[i+1] + 0.114 * id.data[i+2];
+      id.data[i] = id.data[i+1] = id.data[i+2] = g;
     }
     wctx.putImageData(id, 0, 0);
   }
 
-  // Draw watermarks (evenly spaced, right-aligned — same as Java version)
   ctx.save();
   ctx.globalAlpha = opacityPct / 100;
   const sectionH = Math.floor(H / count);
   for (let i = 1; i <= count; i++) {
-    const x = W - Math.floor(wmW * 1.1);
-    const y = H - sectionH * i;
-    ctx.drawImage(wmCanvas, x, y);
+    ctx.drawImage(wm, W - Math.floor(wmW * 1.1), H - sectionH * i);
   }
   ctx.restore();
-
   return canvas;
 }
 
 // ═══════════════════════════════════════════════════════
-//  Downloads
+//  DOWNLOAD
 // ═══════════════════════════════════════════════════════
 async function downloadSingle(canvas, filename, format) {
   const blob = await canvasToBlob(canvas, format);
@@ -399,14 +520,11 @@ async function downloadSingle(canvas, filename, format) {
 }
 
 async function downloadAll(canvases, basename, format) {
-  const ext = format === 'jpeg' ? 'jpg' : format;
-
   if (canvases.length === 1) {
     await downloadSingle(canvases[0], basename, format);
     return;
   }
-
-  // Use JSZip when available
+  const ext = format === 'jpeg' ? 'jpg' : format;
   if (typeof JSZip !== 'undefined') {
     const zip = new JSZip();
     for (let i = 0; i < canvases.length; i++) {
@@ -420,36 +538,33 @@ async function downloadAll(canvases, basename, format) {
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 60000);
   } else {
-    // Fallback: download one by one
+    // Fallback: sequential individual downloads
     for (let i = 0; i < canvases.length; i++) {
       await downloadSingle(canvases[i], `${basename}_${i + 1}`, format);
-      await new Promise(r => setTimeout(r, 300));
+      await new Promise(r => setTimeout(r, 350));
     }
   }
 }
 
 // ═══════════════════════════════════════════════════════
-//  Main run function
+//  RUN
 // ═══════════════════════════════════════════════════════
 async function run() {
-  const mode   = state.mode;
-  const fmt    = dom.fmtSelect.value;
-  const name   = dom.filename.value.trim() || 'output';
-  const dir    = state.direction;
-  const parts  = Math.max(2, parseInt(dom.partsInput.value) || 2);
+  const mode  = state.mode;
+  const fmt   = dom.fmtSelect.value;
+  const name  = dom.filename.value.trim() || 'output';
+  const dir   = state.direction;
+  const parts = Math.max(2, parseInt(dom.partsInput.value) || 2);
 
-  // Validate
+  // ── Validation ──────────────────────────────────────
   if (mode !== 'watermark' && state.files.length === 0) {
-    alert('Please import at least one image.');
-    return;
+    alert('Please import at least one image.'); return;
   }
   if ((mode === 'stitch' || mode === 'stitchsplit') && state.files.length < 2) {
-    alert('Stitch requires at least 2 images.');
-    return;
+    alert('Stitch requires at least 2 images.'); return;
   }
   if (mode === 'watermark' && !state.wmFile) {
-    alert('Please import a watermark image.');
-    return;
+    alert('Please import a watermark image.'); return;
   }
 
   dom.runBtn.disabled = true;
@@ -457,104 +572,216 @@ async function run() {
   showProgress('Loading images…');
 
   try {
-    // ── Load images ──────────────────────────────────
+    // ── Load all images ──────────────────────────────
     const imgs = [];
     for (let i = 0; i < state.files.length; i++) {
-      setProgress(Math.round((i / state.files.length) * 30), `Loading ${i + 1} / ${state.files.length}…`);
+      setProgress(Math.round((i / state.files.length) * 25), `Loading ${i + 1} / ${state.files.length}…`);
       imgs.push(await loadImage(state.files[i]));
-      await yield_();
+      if (i % 5 === 0) await yield_();
     }
 
     let results = [];
 
-    // ── Stitch ───────────────────────────────────────
+    // ════════════════════════════════════════════════
+    //  STITCH — output a single stitched image
+    // ════════════════════════════════════════════════
     if (mode === 'stitch') {
-      setProgress(40, 'Stitching…');
+      setProgress(30, 'Calculating dimensions…');
       await yield_();
-      results = [stitchImages(imgs, dir)];
+
+      const { scale, totalW, totalH } = computeScale(imgs, dir);
+
+      if (scale < 1) {
+        const pct = Math.round(scale * 100);
+        if (!confirm(
+          `The stitched image would be ${totalW}×${totalH}px which exceeds browser limits.\n\n` +
+          `Images will be scaled to ${pct}% (${Math.round(totalW * scale)}×${Math.round(totalH * scale)}px).\n\n` +
+          `Continue?`
+        )) {
+          hideProgress();
+          dom.runBtn.disabled = false;
+          return;
+        }
+      }
+
+      setProgress(50, 'Stitching…');
+      await yield_();
+      results = [stitchImages(imgs, dir, scale)];
       setProgress(100, 'Done!');
     }
 
-    // ── Split ────────────────────────────────────────
+    // ════════════════════════════════════════════════
+    //  SPLIT — equal parts of a single image
+    // ════════════════════════════════════════════════
     else if (mode === 'split') {
-      setProgress(40, 'Splitting…');
+      setProgress(30, 'Preparing…');
       await yield_();
-      const canvas = stitchImages(imgs, 'vertical'); // convert single File → canvas
+
+      const { scale } = computeScale(imgs, 'vertical');
+      if (scale < 1 && !confirm(
+        `Image is very large. It will be scaled to ${Math.round(scale * 100)}% before splitting. Continue?`
+      )) {
+        hideProgress(); dom.runBtn.disabled = false; return;
+      }
+
+      setProgress(50, 'Splitting…');
+      await yield_();
+      const canvas = stitchImages(imgs, 'vertical', scale); // single image → canvas
       results = splitCanvas(canvas, parts, dir);
       setProgress(100, 'Done!');
     }
 
-    // ── Smart Split ──────────────────────────────────
+    // ════════════════════════════════════════════════
+    //  SMART SPLIT — auto-detect uniform rows
+    //  Uses virtual processing — no size limit!
+    // ════════════════════════════════════════════════
     else if (mode === 'smartsplit') {
-      setProgress(30, 'Analysing image…');
-      await yield_();
-      // Draw file into canvas
-      const tmp = document.createElement('canvas');
-      tmp.width  = imgs[0].naturalWidth;
-      tmp.height = imgs[0].naturalHeight;
-      tmp.getContext('2d').drawImage(imgs[0], 0, 0);
+      setProgress(25, 'Scanning rows…');
 
-      results = await smartSplitCanvas(tmp, parts, pct => setProgress(pct, 'Scanning rows…'));
-      if (!results) {
-        setProgress(100, 'Done!');
-        await yield_();
+      const totalH  = imgs.reduce((s, i) => s + imgH(i), 0);
+      const totalW  = Math.max(...imgs.map(imgW));
+      const isLarge = !isWithinLimits(totalW, totalH);
+
+      let splitPts;
+
+      if (isLarge) {
+        // Virtual path — scan each image independently
+        splitPts = await smartSplitVirtual(imgs, parts, pct => setProgress(pct, 'Scanning rows…'));
+      } else {
+        // Small enough — load into one canvas and scan
+        const canvas = stitchImages(imgs, 'vertical');
+        splitPts = await smartSplitCanvas(canvas, parts, pct => setProgress(pct, 'Scanning rows…'));
+      }
+
+      if (splitPts.length < 2) {
         hideProgress();
         alert('Smart Split could not find any uniform split lines.\nTry adjusting the "Parts" count.');
         dom.runBtn.disabled = false;
         return;
       }
+
+      setProgress(85, `Rendering ${splitPts.length - 1} sections…`);
+      await yield_();
+
+      if (isLarge) {
+        // Render sections by compositing source images
+        for (let i = 0; i < splitPts.length - 1; i++) {
+          setProgress(85 + Math.round((i / (splitPts.length - 1)) * 14), `Rendering section ${i + 1}…`);
+          results.push(renderSectionVertical(imgs, splitPts[i], splitPts[i + 1]));
+          await yield_();
+        }
+      } else {
+        const canvas = stitchImages(imgs, 'vertical');
+        results = splitPointsToCanvases(canvas, splitPts);
+      }
+
       setProgress(100, 'Done!');
     }
 
-    // ── Stitch + Split ───────────────────────────────
+    // ════════════════════════════════════════════════
+    //  STITCH + SPLIT — the primary large-image workflow
+    //  Always uses virtual processing.
+    // ════════════════════════════════════════════════
     else if (mode === 'stitchsplit') {
-      const combo   = dom.ssCombo.value;      // e.g. "v-smart"
+      const combo     = dom.ssCombo.value;             // e.g. "v-smart"
       const stitchDir = combo.startsWith('v') ? 'vertical' : 'horizontal';
-      const splitOp   = combo.split('-')[1];   // smart | h | v
+      const splitOp   = combo.split('-')[1];            // smart | h | v
 
-      setProgress(30, 'Stitching…');
-      await yield_();
-      const stitched = stitchImages(imgs, stitchDir);
+      const totalH = imgs.reduce((s, i) => s + imgH(i), 0);
+      const totalW = stitchDir === 'vertical'
+        ? Math.max(...imgs.map(imgW))
+        : imgs.reduce((s, i) => s + imgW(i), 0);
+      const isLarge = !isWithinLimits(totalW, totalH);
 
-      if (splitOp === 'smart') {
-        setProgress(40, 'Smart splitting…');
-        results = await smartSplitCanvas(stitched, parts, pct => setProgress(40 + Math.round(pct * 0.5), 'Scanning rows…'));
-        if (!results) {
+      if (splitOp === 'smart' && stitchDir === 'vertical' && isLarge) {
+        // ── Fully virtual path (most common use case) ──
+        setProgress(25, 'Scanning rows (virtual)…');
+
+        const splitPts = await smartSplitVirtual(imgs, parts, pct =>
+          setProgress(pct, `Scanning rows… (${pct}%)`));
+
+        if (splitPts.length < 2) {
           hideProgress();
           alert('Smart Split could not find any split lines in the stitched image.');
           dom.runBtn.disabled = false;
           return;
         }
-      } else {
-        setProgress(60, 'Splitting…');
+
+        setProgress(85, `Rendering ${splitPts.length - 1} sections…`);
         await yield_();
-        const splitDir = splitOp === 'h' ? 'horizontal' : 'vertical';
-        results = splitCanvas(stitched, parts, splitDir);
+
+        for (let i = 0; i < splitPts.length - 1; i++) {
+          setProgress(85 + Math.round((i / (splitPts.length - 1)) * 14), `Rendering section ${i + 1}…`);
+          results.push(renderSectionVertical(imgs, splitPts[i], splitPts[i + 1]));
+          await yield_();
+        }
+
+      } else {
+        // ── Canvas path (small images or horizontal stitch) ──
+        const { scale } = computeScale(imgs, stitchDir);
+        if (scale < 1 && !confirm(
+          `Combined image is too large. Will scale to ${Math.round(scale*100)}%. Continue?`
+        )) {
+          hideProgress(); dom.runBtn.disabled = false; return;
+        }
+
+        setProgress(30, 'Stitching…');
+        await yield_();
+        const stitched = stitchImages(imgs, stitchDir, scale);
+
+        if (splitOp === 'smart') {
+          setProgress(50, 'Smart splitting…');
+          const splitPts = await smartSplitCanvas(stitched, parts, pct =>
+            setProgress(50 + Math.round(pct * 0.4), 'Scanning rows…'));
+          if (splitPts.length < 2) {
+            hideProgress();
+            alert('Smart Split could not find any split lines in the stitched image.');
+            dom.runBtn.disabled = false;
+            return;
+          }
+          results = splitPointsToCanvases(stitched, splitPts);
+        } else {
+          setProgress(70, 'Splitting…');
+          await yield_();
+          const splitDir = splitOp === 'h' ? 'horizontal' : 'vertical';
+          results = splitCanvas(stitched, parts, splitDir);
+        }
       }
+
       setProgress(100, 'Done!');
     }
 
-    // ── Watermark ────────────────────────────────────
+    // ════════════════════════════════════════════════
+    //  WATERMARK
+    // ════════════════════════════════════════════════
     else if (mode === 'watermark') {
-      setProgress(40, 'Loading watermark…');
+      setProgress(30, 'Loading watermark…');
       const wmImg = await loadImage(state.wmFile);
+
+      const { scale } = computeScale(imgs, 'vertical');
+      if (scale < 1 && !confirm(
+        `Image is very large. Will scale to ${Math.round(scale*100)}%. Continue?`
+      )) {
+        hideProgress(); dom.runBtn.disabled = false; return;
+      }
 
       setProgress(60, 'Applying watermark…');
       await yield_();
 
-      // Draw main image to canvas
-      const src = imgs[0];
-      const canvas = document.createElement('canvas');
-      canvas.width  = src.naturalWidth;
-      canvas.height = src.naturalHeight;
-      canvas.getContext('2d').drawImage(src, 0, 0);
+      const src    = imgs[0];
+      const sw     = Math.round(imgW(src) * scale);
+      const sh     = Math.round(imgH(src) * scale);
+      const canvas = safeCanvas(sw, sh);
+      if (!canvas) throw new Error('Image too large for canvas.');
+      canvas.getContext('2d').drawImage(src, 0, 0, sw, sh);
 
-      const opacity   = parseInt(dom.opacityRange.value) || 40;
-      const greyscale = dom.greyscaleChk.checked;
-      const wmCount   = Math.max(1, parseInt(dom.wmCount.value) || 3);
-      const wmWpct    = Math.min(100, Math.max(1, parseInt(dom.wmWidthPct.value) || 20));
-
-      applyWatermark(canvas, wmImg, opacity, greyscale, wmCount, wmWpct);
+      applyWatermark(
+        canvas, wmImg,
+        parseInt(dom.opacityRange.value) || 40,
+        dom.greyscaleChk.checked,
+        Math.max(1, parseInt(dom.wmCount.value) || 3),
+        Math.min(100, Math.max(1, parseInt(dom.wmWidthPct.value) || 20))
+      );
       results = [canvas];
       setProgress(100, 'Done!');
     }
@@ -572,16 +799,17 @@ async function run() {
   }
 }
 
+// ─── Size check helper ───────────────────────────────
+function isWithinLimits(w, h) {
+  return w <= MAX_CANVAS_DIM && h <= MAX_CANVAS_DIM && w * h <= MAX_CANVAS_PIXELS;
+}
+
 // ═══════════════════════════════════════════════════════
 //  Event wiring
 // ═══════════════════════════════════════════════════════
 
-// Mode tabs
-dom.tabs.forEach(tab => {
-  tab.addEventListener('click', () => applyMode(tab.dataset.mode));
-});
+dom.tabs.forEach(tab => tab.addEventListener('click', () => applyMode(tab.dataset.mode)));
 
-// Direction toggles
 [dom.btnVertical, dom.btnHorizontal].forEach(btn => {
   btn.addEventListener('click', () => {
     state.direction = btn.dataset.dir;
@@ -590,72 +818,46 @@ dom.tabs.forEach(tab => {
   });
 });
 
-// Opacity slider
 dom.opacityRange.addEventListener('input', () => {
   dom.opacityVal.textContent = dom.opacityRange.value;
 });
 
-// File input (main)
 dom.fileInput.addEventListener('change', e => {
   const incoming = Array.from(e.target.files || []);
-  if (!dom.fileInput.multiple) {
-    state.files = incoming.slice(0, 1);
-  } else {
-    state.files = [...state.files, ...incoming];
-  }
+  state.files = dom.fileInput.multiple ? [...state.files, ...incoming] : incoming.slice(0, 1);
   renderFileList();
-  e.target.value = ''; // allow re-selecting same file
+  e.target.value = '';
 });
 
-// Drag & drop
-dom.dropZone.addEventListener('dragover', e => {
-  e.preventDefault();
-  dom.dropZone.classList.add('drag-over');
-});
-dom.dropZone.addEventListener('dragleave', () => dom.dropZone.classList.remove('drag-over'));
+dom.dropZone.addEventListener('dragover',  e => { e.preventDefault(); dom.dropZone.classList.add('drag-over'); });
+dom.dropZone.addEventListener('dragleave', ()  => dom.dropZone.classList.remove('drag-over'));
 dom.dropZone.addEventListener('drop', e => {
   e.preventDefault();
   dom.dropZone.classList.remove('drag-over');
   const files = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'));
-  if (!dom.fileInput.multiple) {
-    state.files = files.slice(0, 1);
-  } else {
-    state.files = [...state.files, ...files];
-  }
+  state.files = dom.fileInput.multiple ? [...state.files, ...files] : files.slice(0, 1);
   renderFileList();
 });
 
-// Keyboard accessibility for drop zone
 dom.dropZone.addEventListener('keydown', e => {
-  if (e.key === 'Enter' || e.key === ' ') {
-    e.preventDefault();
-    dom.fileInput.click();
-  }
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); dom.fileInput.click(); }
 });
 
-// Watermark file input
 dom.wmImgBtn.addEventListener('click', () => dom.wmImgInput.click());
 dom.wmImgInput.addEventListener('change', e => {
   const file = e.target.files[0];
-  if (file) {
-    state.wmFile = file;
-    dom.wmImgLabel.textContent = file.name;
-  }
+  if (file) { state.wmFile = file; dom.wmImgLabel.textContent = file.name; }
   e.target.value = '';
 });
 
-// Run button
 dom.runBtn.addEventListener('click', run);
 
-// Download button — download all results
 dom.downloadBtn.addEventListener('click', async () => {
   if (!state.results.length) return;
-  const name = dom.filename.value.trim() || 'output';
-  const fmt  = dom.fmtSelect.value;
   dom.downloadBtn.disabled = true;
   dom.downloadBtn.textContent = '⏳ Preparing…';
   try {
-    await downloadAll(state.results, name, fmt);
+    await downloadAll(state.results, dom.filename.value.trim() || 'output', dom.fmtSelect.value);
   } finally {
     dom.downloadBtn.disabled = false;
     dom.downloadBtn.textContent = '⬇ Download';
